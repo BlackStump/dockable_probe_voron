@@ -89,4 +89,5 @@ verify_ready
 check_klipper
 check_requirements
 link_extension
+add_updater
 restart_klipper
