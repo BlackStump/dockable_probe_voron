@@ -20,6 +20,7 @@ PROBE_DOCKED    = 2
 MULTI_OFF       = 0
 MULTI_FIRST     = 1
 MULTI_ON        = 2
+SAMPLE_COUNT    = 3
 
 HINT_VERIFICATION_ERROR = """
 {0}: A probe attachment verification method
