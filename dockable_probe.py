@@ -152,17 +152,13 @@ class ProbeState:
                     self.last_verify_state = PROBE_DOCKED
         return self.last_verify_state
 
-class DockableProbe(ProbeSessionHelper):
-    def __init__(self, config, mcu_probe):
-        super().__init__(config, mcu_probe)
-        # Other initialization code for DockableProbe
-
 
 class DockableProbe:
     def __init__(self, config):
-       # self.sample_count = 0  # Initialize sample_count
-       # self.samples_tolerance = 0 # Initialize sample_tolerance
-       # self.samples_retries = 0 # Initialize sample_retries
+        self.sample_count = 0  # Initialize sample_count
+        self.samples_tolerance = 0 # Initialize sample_tolerance
+        self.samples_retries = 0 # Initialize sample_retries
+        self.samples_result = None
         self.printer = config.get_printer()
         self.gcode = self.printer.lookup_object('gcode')
         self.name = config.get_name()
