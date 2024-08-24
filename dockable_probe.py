@@ -20,7 +20,6 @@ PROBE_DOCKED    = 2
 MULTI_OFF       = 0
 MULTI_FIRST     = 1
 MULTI_ON        = 2
-SAMPLE_COUNT    = 3
 
 HINT_VERIFICATION_ERROR = """
 {0}: A probe attachment verification method
@@ -155,6 +154,7 @@ class ProbeState:
 
 class DockableProbe:
     def __init__(self, config):
+        self.sample_count = 0  # Initialize sample_count
         self.printer = config.get_printer()
         self.gcode = self.printer.lookup_object('gcode')
         self.name = config.get_name()
