@@ -155,6 +155,7 @@ class ProbeState:
 class DockableProbe:
     def __init__(self, config):
         self.sample_count = 0  # Initialize sample_count
+        self.samples_tolerance = 0 # Initialize sample_tolerance
         self.printer = config.get_printer()
         self.gcode = self.printer.lookup_object('gcode')
         self.name = config.get_name()
