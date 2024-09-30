@@ -171,9 +171,9 @@ class DockableProbe:
         self.travel_speed        = config.getfloat('travel_speed',
                                                    self.speed, above=0.)
         self.attach_speed        = config.getfloat('attach_speed',
-                                                   self.travel_speed, above=0.)
+                                                   self.speed, above=0.)
         self.detach_speed        = config.getfloat('detach_speed',
-                                                   self.travel_speed, above=0.)
+                                                   self.speed, above=0.)
         self.sample_retract_dist = config.getfloat('sample_retract_dist',
                                                    2., above=0.)
         self.return_to_last_probe_position_after_detach = \
@@ -341,11 +341,11 @@ class DockableProbe:
 
         if len(self.approach_position) > 2:
             self.toolhead.manual_move([None, None, self.approach_position[2]],
-                                      self.travel_speed)
+                                      self.attach_speed)
 
         self.toolhead.manual_move(
             [self.approach_position[0], self.approach_position[1], None],
-             self.travel_speed)
+             self.attach_speed)
 
     cmd_MOVE_TO_DOCK_PROBE_help = "Move to connect the toolhead/dock" \
                                 "to the probe"
