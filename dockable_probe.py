@@ -152,13 +152,8 @@ class ProbeState:
                     self.last_verify_state = PROBE_DOCKED
         return self.last_verify_state
 
-
 class DockableProbe:
     def __init__(self, config):
-        self.sample_count = 0  # Initialize sample_count
-        self.samples_tolerance = 0 # Initialize sample_tolerance
-        self.samples_retries = 0 # Initialize sample_retries
-        self.samples_result = None
         self.printer = config.get_printer()
         self.gcode = self.printer.lookup_object('gcode')
         self.name = config.get_name()
@@ -176,9 +171,9 @@ class DockableProbe:
         self.travel_speed        = config.getfloat('travel_speed',
                                                    self.speed, above=0.)
         self.attach_speed        = config.getfloat('attach_speed',
-                                                   self.speed, above=0.)
+                                                   self.travel_speed, above=0.)
         self.detach_speed        = config.getfloat('detach_speed',
-                                                   self.speed, above=0.)
+                                                   self.travel_speed, above=0.)
         self.sample_retract_dist = config.getfloat('sample_retract_dist',
                                                    2., above=0.)
         self.return_to_last_probe_position_after_detach = \
@@ -188,7 +183,6 @@ class DockableProbe:
         self.approach_position = self._parse_coord(config, 'approach_position')
         self.detach_position   = self._parse_coord(config, 'detach_position')
         self.dock_position     = self._parse_coord(config, 'dock_position')
-        self.extract_position  = self._parse_coord(config, 'extract_position')
         self.z_hop             = config.getfloat('z_hop', 0., above=0.)
 
         self.dock_requires_z = (len(self.approach_position) > 2
@@ -292,6 +286,7 @@ class DockableProbe:
         p = [None] * supplied_dims
         p[:supplied_dims] = vals
         return p
+
     def get_probe_params(self, gcmd=None):
         return self.probe_session.get_probe_params(gcmd)
     def get_offsets(self):
@@ -300,12 +295,11 @@ class DockableProbe:
         return self.cmd_helper.get_status(eventtime)
     def start_probe_session(self, gcmd):
         return self.probe_session.start_probe_session(gcmd)
-    
 
     def _handle_connect(self):
         self.toolhead = self.printer.lookup_object('toolhead')
 
-   # If neither position config options contain a Z coordinate return early
+        # If neither position config options contain a Z coordinate return early
         if not self.dock_requires_z:
             return
 
@@ -335,8 +329,8 @@ class DockableProbe:
             'last_status': self.last_probe_state,
         }
 
-    cmd_MOVE_TO_APPROACH_PROBE_help = "Move close to the probe dock"\
-                              "before before attaching"
+    cmd_MOVE_TO_APPROACH_PROBE_help = "Move close to the probe dock" \
+                                    "before attaching"
     def cmd_MOVE_TO_APPROACH_PROBE(self, gcmd):
         self._align_z()
 
@@ -347,55 +341,43 @@ class DockableProbe:
 
         if len(self.approach_position) > 2:
             self.toolhead.manual_move([None, None, self.approach_position[2]],
-                                  self.attach_speed) 
-                                   # Use attach_speed here for approaching
-        else:
-            self.toolhead.manual_move(
-                [self.approach_position[0], self.approach_position[1], None],
-                 self.attach_speed)  # Use attach_speed here for approaching
+                                      self.travel_speed)
 
-    cmd_MOVE_TO_DOCK_PROBE_help = "Move to connect the toolhead/dock"\
-                              "to the probe"
+        self.toolhead.manual_move(
+            [self.approach_position[0], self.approach_position[1], None],
+             self.travel_speed)
+
+    cmd_MOVE_TO_DOCK_PROBE_help = "Move to connect the toolhead/dock" \
+                                "to the probe"
     def cmd_MOVE_TO_DOCK_PROBE(self, gcmd):
         if len(self.dock_position) > 2:
             self.toolhead.manual_move([None, None, self.dock_position[2]],
-                                      self.attach_speed) 
-                                   # Use attach_speed here for docking
+                                      self.attach_speed)
 
         self.toolhead.manual_move(
             [self.dock_position[0], self.dock_position[1], None],
-             self.attach_speed)  # Use attach_speed here for docking
-
+             self.attach_speed)
 
     cmd_MOVE_TO_EXTRACT_PROBE_help = "Move away from the dock with the" \
                                 "probe attached"
     def cmd_MOVE_TO_EXTRACT_PROBE(self, gcmd):
-        if len(self.extract_position) > 2:
-            self.toolhead.manual_move([None, None, self.extract_position[2]],
-                                      self.attach_speed)
-
-        self.toolhead.manual_move(
-            [self.extract_position[0], self.extract_position[1], None],
-            self.attach_speed)  # Use attach_speed here for extracting
-
+        self.cmd_MOVE_TO_APPROACH_PROBE(gcmd)
 
     cmd_MOVE_TO_INSERT_PROBE_help = "Move near the dock with the" \
                                 "probe attached before detaching"
     def cmd_MOVE_TO_INSERT_PROBE(self, gcmd):
         self.cmd_MOVE_TO_APPROACH_PROBE(gcmd)
 
-    cmd_MOVE_TO_DETACH_PROBE_help = "Move away from the dock"\
-                                "to detach the probe"
+    cmd_MOVE_TO_DETACH_PROBE_help = "Move away from the dock to detach" \
+                                "the probe"
     def cmd_MOVE_TO_DETACH_PROBE(self, gcmd):
         if len(self.detach_position) > 2:
             self.toolhead.manual_move([None, None, self.detach_position[2]],
                                       self.detach_speed)
-                                   # Use detach_speed here for detaching
 
         self.toolhead.manual_move(
             [self.detach_position[0], self.detach_position[1], None],
-             self.detach_speed)  # Use detach_speed here for detaching
-
+             self.detach_speed)
 
     cmd_SET_DOCKABLE_PROBE_help = "Set probe parameters"
     def cmd_SET_DOCKABLE_PROBE(self, gcmd):
@@ -442,13 +424,17 @@ class DockableProbe:
         if self.get_probe_state() != PROBE_ATTACHED:
             raise self.printer.command_error('Probe attach failed!')
 
-        if return_pos:
-            if not self._check_distance(return_pos, self.approach_distance):
+        # Optionally, return to the last probe position if enabled in the config
+        if self.return_to_last_probe_position_after_detach and return_pos:
+            if not self._check_distance(return_pos, self.detach_distance):
                 self.toolhead.manual_move(
                     [return_pos[0], return_pos[1], None],
                     self.travel_speed)
-                # Do NOT return to the original Z position after attach
-                # as the probe might crash into the bed.
+                # Return to original Z position after detach as
+                # there's no chance of the probe crashing into the bed.
+                self.toolhead.manual_move(
+                    [None, None, return_pos[2]],
+                    self.travel_speed)
 
     def detach_probe(self, return_pos=None):
         retry = 0
@@ -469,8 +455,7 @@ class DockableProbe:
         if self.get_probe_state() != PROBE_DOCKED:
             raise self.printer.command_error('Probe detach failed!')
 
-        # Optionally, return to the last probe position if enabled in the config
-        if self.return_to_last_probe_position_after_detach and return_pos:
+        if return_pos:
             if not self._check_distance(return_pos, self.detach_distance):
                 self.toolhead.manual_move(
                     [return_pos[0], return_pos[1], None],
@@ -480,7 +465,6 @@ class DockableProbe:
                 self.toolhead.manual_move(
                     [None, None, return_pos[2]],
                     self.travel_speed)
-
 
     def auto_detach_probe(self, return_pos=None):
         if self.get_probe_state() == PROBE_DOCKED:
