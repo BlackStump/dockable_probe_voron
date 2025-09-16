@@ -294,11 +294,15 @@ class DockableProbe:
         return p
 
     def get_probe_params(self, gcmd=None):
+        if hasattr(self, 'param_helper'):
+            return self.param_helper.get_probe_params(gcmd)
         return self.probe_session.get_probe_params(gcmd)
     def get_offsets(self):
         return self.probe_offsets.get_offsets()
     def get_status(self, eventtime):
-        return self.cmd_helper.get_status(eventtime)
+        status = self.cmd_helper.get_status(eventtime)
+        status['last_status'] = self.last_probe_state
+        return status
     def start_probe_session(self, gcmd):
         return self.probe_session.start_probe_session(gcmd)
 
@@ -328,13 +332,7 @@ class DockableProbe:
         state = self.probe_states[self.last_probe_state]
 
         gcmd.respond_info('Probe Status: %s' % (state))
-
-    def get_status(self, curtime):
-        # Use last_'status' here to be consistent with QUERY_PROBE_'STATUS'.
-        return {
-            'last_status': self.last_probe_state,
-        }
-
+   
     cmd_MOVE_TO_APPROACH_PROBE_help = "Move close to the probe dock" \
                                     "before attaching"
     def cmd_MOVE_TO_APPROACH_PROBE(self, gcmd):
