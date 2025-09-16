@@ -214,7 +214,13 @@ class DockableProbe:
         self.cmd_helper = probe.ProbeCommandHelper(
             config, self, self.mcu_endstop.query_endstop)
         self.probe_offsets = probe.ProbeOffsetsHelper(config)
-        self.probe_session = probe.ProbeSessionHelper(config, self)
+        if hasattr(probe, 'ProbeParameterHelper'):
+            self.param_helper = probe.ProbeParameterHelper(config)
+            self.homing_helper = probe.HomingViaProbeHelper(config, self, self.param_helper)
+            self.probe_session = probe.ProbeSessionHelper(
+                        config, self.param_helper, self.homing_helper.start_probe_session)
+        else:
+            self.probe_session = probe.ProbeSessionHelper(config, self)
 
         # State
         self.last_z = -9999
