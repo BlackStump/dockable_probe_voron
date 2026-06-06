@@ -217,10 +217,18 @@ class DockableProbe:
         if hasattr(probe, 'ProbeParameterHelper'):
             self.param_helper = probe.ProbeParameterHelper(config)
             self.homing_helper = probe.HomingViaProbeHelper(config, self, self.param_helper)
-            self.probe_session = probe.ProbeSessionHelper(
-                        config, self.param_helper, self.homing_helper.start_probe_session)
-        else:
+            if hasattr(probe, 'ProbeSessionHelper'):
+                self.probe_session = probe.ProbeSessionHelper(
+                    config, self.param_helper, self.homing_helper.start_probe_session)
+            else:
+        # Current Klipper master: ProbeSessionHelper was removed;
+        # HomingViaProbeHelper IS the session interface now.
+                self.probe_session = self.homing_helper
+        elif hasattr(probe, 'ProbeSessionHelper'):
             self.probe_session = probe.ProbeSessionHelper(config, self)
+        else:
+            raise config.error(
+                "Incompatible Klipper probe API - cannot initialize DockableProbe")
 
         # State
         self.last_z = -9999
