@@ -305,7 +305,7 @@ class DockableProbe:
         if hasattr(self, 'param_helper'):
             return self.param_helper.get_probe_params(gcmd)
         return self.probe_session.get_probe_params(gcmd)
-    def get_offsets(self):
+    def get_offsets(self, gcmd=None):
         return self.probe_offsets.get_offsets()
     def get_status(self, eventtime):
         status = self.cmd_helper.get_status(eventtime)
