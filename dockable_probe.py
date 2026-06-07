@@ -7,12 +7,23 @@
 #           Copyright (C) 2023 Alan Smith <alan@airpost.net>
 # Modified: Scott / BlackStump - return_to_last_probe_position option,
 #           attach/detach speed config
-# Updated for current Klipper API (post PR #6605 / #6879):
-#   - ProbeParameterHelper now takes only (config), no session callback
-#   - HomingViaProbeHelper signature changed (added probe_offsets param)
-#   - ProbeSessionHelper now delegates to HomingViaProbeHelper.start_probe_session
-#   - probing_move() removed; use probe_session run_probe() API instead
-#   - get_offsets() now accepts optional gcmd parameter
+#
+# Updated for current Klipper master API:
+#
+#   HomingViaProbeHelper(config, position_endstop_z, query_endstop_cb=None)
+#       - lightweight: just registers probe:z_virtual_endstop pin
+#       - does NOT own the probe session
+#
+#   DescendToEndstopHelper(config, mcu_probe, probe_offsets, param_helper)
+#       - owns descend_until_trigger(), pull_trigger_positions(), clear_trigger_positions()
+#
+#   SampleAveragingHelper(config, param_helper, start_session_cb)
+#       - owns multi-sample averaging; start_probe_session() returns self
+#       - internally calls start_session_cb(gcmd) -> hw_session with
+#         run_probe() / pull_probed_results() / end_probe_session()
+#
+#   ProbeParameterHelper(config)  - no extra args
+#   ProbeOffsetsHelper(config)    - get_offsets(gcmd=None)
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
 
@@ -23,7 +34,7 @@ import logging
 
 PROBE_VERIFY_DELAY = .1
 
-PROBE_UNKNOWN = 0
+PROBE_UNKNOWN  = 0
 PROBE_ATTACHED = 1
 PROBE_DOCKED   = 2
 
@@ -33,13 +44,11 @@ MULTI_ON    = 2
 
 HINT_VERIFICATION_ERROR = """
 {0}: A probe attachment verification method
-was not provided. A method to verify the probes attachment
+was not provided. A method to verify the probe attachment
 state must be specified to prevent unintended behavior.
 
 At least one of the following must be specified:
 'check_open_attach', 'probe_sense_pin', 'dock_sense_pin'
-
-Please see {0}.md and config_Reference.md.
 """
 
 HINT_VIRTUAL_ENDSTOP_ERROR = """
@@ -50,8 +59,6 @@ containing a Z coordinate.
 If the toolhead doesn't need to move in Z to reach the
 dock then no Z coordinate should be specified in
 'approach_position'/'dock_position'.
-
-Please see {0}.md and config_Reference.md.
 """
 
 ######################################################################
@@ -61,7 +68,7 @@ Please see {0}.md and config_Reference.md.
 class PinPollingHelper:
     def __init__(self, config, endstop):
         self.printer = config.get_printer()
-        self.query_endstop = endstop
+        self.query_endstop    = endstop
         self.last_verify_time  = 0
         self.last_verify_state = None
 
@@ -101,19 +108,16 @@ class ProbeState:
 
         def configEndstop(pin):
             mcu_endstop = ppins.setup_pin('endstop', pin)
-            helper = PinPollingHelper(config, mcu_endstop.query_endstop)
-            return helper
+            return PinPollingHelper(config, mcu_endstop.query_endstop)
 
-        # Default: use probe endstop as dummy sensor
+        # Default: use probe endstop as dummy sensor (inverted = open when attached)
         ehelper = PinPollingHelper(config, aProbe.query_endstop)
+        self.probe_sense_pin = ehelper.query_pin_inv
 
         # probe_sense_pin (optional)
         probe_sense_pin = config.get('probe_sense_pin', None)
         if probe_sense_pin is not None:
-            probe_sense_helper = configEndstop(probe_sense_pin)
-            self.probe_sense_pin = probe_sense_helper.query_pin
-        else:
-            self.probe_sense_pin = ehelper.query_pin_inv
+            self.probe_sense_pin = configEndstop(probe_sense_pin).query_pin
 
         # check_open_attach overrides probe_sense_pin when present
         if config.fileconfig.has_option(config.section, 'check_open_attach'):
@@ -127,10 +131,8 @@ class ProbeState:
         self.dock_sense_pin = None
         dock_sense_pin = config.get('dock_sense_pin', None)
         if dock_sense_pin is not None:
-            dock_sense_helper = configEndstop(dock_sense_pin)
-            self.dock_sense_pin = dock_sense_helper.query_pin
+            self.dock_sense_pin = configEndstop(dock_sense_pin).query_pin
 
-        # State tracking
         self.last_verify_time  = 0
         self.last_verify_state = PROBE_UNKNOWN
 
@@ -155,11 +157,34 @@ class ProbeState:
                 elif d and not a:
                     self.last_verify_state = PROBE_DOCKED
             else:
-                if a:
-                    self.last_verify_state = PROBE_ATTACHED
-                elif not a:
-                    self.last_verify_state = PROBE_DOCKED
+                self.last_verify_state = PROBE_ATTACHED if a else PROBE_DOCKED
         return self.last_verify_state
+
+######################################################################
+# Probe session wrapper
+# Bridges the SampleAveragingHelper "start_session_cb" interface to
+# DockableProbe.  SampleAveragingHelper calls start_session_cb(gcmd)
+# and expects the returned object to have:
+#   run_probe(gcmd)
+#   pull_probed_results() -> list
+#   end_probe_session()
+######################################################################
+
+class DockableProbeSession:
+    """Thin session object returned to SampleAveragingHelper."""
+    def __init__(self, dp, descend_helper):
+        self.dp             = dp
+        self.descend_helper = descend_helper
+
+    def run_probe(self, gcmd):
+        self.descend_helper.descend_until_trigger(gcmd)
+
+    def pull_probed_results(self):
+        return self.descend_helper.pull_trigger_positions()
+
+    def end_probe_session(self):
+        self.descend_helper.clear_trigger_positions()
+        self.dp.multi_probe_end()
 
 ######################################################################
 # Main DockableProbe class
@@ -180,9 +205,8 @@ class DockableProbe:
         self.speed            = config.getfloat('speed', 5.0, above=0.)
         self.lift_speed       = config.getfloat('lift_speed',
                                                 self.speed, above=0.)
-        self.dock_retries     = config.getint('dock_retries', 0)
-        self.auto_attach_detach = config.getboolean('auto_attach_detach',
-                                                    True)
+        self.dock_retries       = config.getint('dock_retries', 0)
+        self.auto_attach_detach = config.getboolean('auto_attach_detach', True)
         self.travel_speed     = config.getfloat('travel_speed',
                                                 self.speed, above=0.)
         self.attach_speed     = config.getfloat('attach_speed',
@@ -221,51 +245,52 @@ class DockableProbe:
         # klipper_z_calibration compatibility
         self.mcu_probe = self.mcu_endstop
 
-        # Endstop wrappers
-        self.get_mcu        = self.mcu_endstop.get_mcu
-        self.add_stepper    = self.mcu_endstop.add_stepper
-        self.get_steppers   = self.mcu_endstop.get_steppers
-        self.home_wait      = self.mcu_endstop.home_wait
-        self.query_endstop  = self.mcu_endstop.query_endstop
+        # Endstop wrappers (needed by DescendToEndstopHelper via LookupZSteppers)
+        self.get_mcu       = self.mcu_endstop.get_mcu
+        self.add_stepper   = self.mcu_endstop.add_stepper
+        self.get_steppers  = self.mcu_endstop.get_steppers
+        self.home_wait     = self.mcu_endstop.home_wait
+        self.query_endstop = self.mcu_endstop.query_endstop
 
         self.finish_home_complete = self.wait_trigger_complete = None
 
         # ----------------------------------------------------------------
-        # Probe helper classes
-        # Current Klipper API (post PR #6605 / #6879):
-        #
-        #   ProbeParameterHelper(config)          -- no session arg
-        #   ProbeOffsetsHelper(config)
-        #   ProbeCommandHelper(config, probe, qe)
-        #   HomingViaProbeHelper(config, mcu_probe, probe_offsets, param_helper)
-        #   ProbeSessionHelper delegates to HomingViaProbeHelper
+        # Probe helper classes  (current Klipper master)
         # ----------------------------------------------------------------
-        self.cmd_helper   = probe.ProbeCommandHelper(
-            config, self, self.mcu_endstop.query_endstop)
         self.probe_offsets = probe.ProbeOffsetsHelper(config)
         self.param_helper  = probe.ProbeParameterHelper(config)
 
-        # HomingViaProbeHelper registers the probe:z_virtual_endstop pin
-        # and owns start_probe_session / run_probe / pull_probed_results /
-        # end_probe_session.
-        self.homing_helper = probe.HomingViaProbeHelper(
+        # DescendToEndstopHelper owns the actual Z-descend / endstop trigger.
+        # It calls self.add_stepper (via LookupZSteppers) so we must exist first.
+        self.descend_helper = probe.DescendToEndstopHelper(
             config, self, self.probe_offsets, self.param_helper)
 
-        # ProbeSessionHelper wraps HomingViaProbeHelper.start_probe_session
-        self.probe_session = probe.ProbeSessionHelper(
-            config, self.param_helper,
-            self.homing_helper.start_probe_session)
+        # HomingViaProbeHelper just registers the probe:z_virtual_endstop pin.
+        # Signature: (config, position_endstop_z_float, query_endstop_cb=None)
+        probe.HomingViaProbeHelper(
+            config,
+            self.position_endstop,
+            self.mcu_endstop.query_endstop)
+
+        # SampleAveragingHelper handles multi-sample averaging.
+        # It calls start_session_cb(gcmd) -> session object.
+        self.probe_session = probe.SampleAveragingHelper(
+            config, self.param_helper, self._start_hw_session)
+
+        # ProbeCommandHelper registers PROBE, QUERY_PROBE, PROBE_CALIBRATE etc.
+        self.cmd_helper = probe.ProbeCommandHelper(
+            config, self, self.mcu_endstop.query_endstop)
 
         # ----------------------------------------------------------------
         # State
         # ----------------------------------------------------------------
-        self.last_z   = -9999
-        self.multi    = MULTI_OFF
+        self.last_z      = -9999
+        self.multi       = MULTI_OFF
         self._last_homed = None
 
         pstate = ProbeState(config, self)
-        self.get_probe_state   = pstate.get_probe_state
-        self.last_probe_state  = PROBE_UNKNOWN
+        self.get_probe_state  = pstate.get_probe_state
+        self.last_probe_state = PROBE_UNKNOWN
         self.probe_states = {
             PROBE_ATTACHED: 'ATTACHED',
             PROBE_DOCKED:   'DOCKED',
@@ -303,9 +328,20 @@ class DockableProbe:
             self.cmd_DETACH_PROBE,
             desc=self.cmd_DETACH_PROBE_help)
 
-        # Event handlers
         self.printer.register_event_handler('klippy:connect',
                                             self._handle_connect)
+
+    # ------------------------------------------------------------------
+    # Session factory called by SampleAveragingHelper
+    # ------------------------------------------------------------------
+
+    def _start_hw_session(self, gcmd):
+        """Called by SampleAveragingHelper.start_probe_session().
+        Attaches the probe, resets the descend helper, and returns a
+        session object that SampleAveragingHelper will drive."""
+        self.multi_probe_begin()
+        self.descend_helper.clear_trigger_positions()
+        return DockableProbeSession(self, self.descend_helper)
 
     # ------------------------------------------------------------------
     # Config helpers
@@ -329,19 +365,14 @@ class DockableProbe:
         return p
 
     # ------------------------------------------------------------------
-    # Public probe API (called by ProbeCommandHelper / ProbeSessionHelper)
+    # Public probe API
     # ------------------------------------------------------------------
 
     def get_probe_params(self, gcmd=None):
         return self.param_helper.get_probe_params(gcmd)
 
     def get_offsets(self, gcmd=None):
-        # Current Klipper's ProbeOffsetsHelper.get_offsets() accepts an
-        # optional gcmd; older versions didn't.  Try both signatures.
-        try:
-            return self.probe_offsets.get_offsets(gcmd)
-        except TypeError:
-            return self.probe_offsets.get_offsets()
+        return self.probe_offsets.get_offsets(gcmd)
 
     def get_status(self, eventtime):
         status = self.cmd_helper.get_status(eventtime)
@@ -350,6 +381,9 @@ class DockableProbe:
 
     def start_probe_session(self, gcmd):
         return self.probe_session.start_probe_session(gcmd)
+
+    def get_position_endstop(self):
+        return self.position_endstop
 
     # ------------------------------------------------------------------
     # klippy:connect handler
@@ -404,7 +438,7 @@ class DockableProbe:
     def cmd_MOVE_TO_EXTRACT_PROBE(self, gcmd):
         self.cmd_MOVE_TO_APPROACH_PROBE(gcmd)
 
-    cmd_MOVE_TO_INSERT_PROBE_help = "Move near the dock with the probe attached before detaching"
+    cmd_MOVE_TO_INSERT_PROBE_help = "Move near the dock with probe attached before detaching"
     def cmd_MOVE_TO_INSERT_PROBE(self, gcmd):
         self.cmd_MOVE_TO_APPROACH_PROBE(gcmd)
 
@@ -580,9 +614,7 @@ class DockableProbe:
         self.last_z = self.toolhead.get_position()[2]
 
     ##################################################################
-    # Probe session / homing wrappers
-    # These are called by HomingViaProbeHelper event handlers and by
-    # ProbeSessionHelper.
+    # Multi-probe begin/end  (called from _start_hw_session / session end)
     ##################################################################
 
     def multi_probe_begin(self):
@@ -598,20 +630,10 @@ class DockableProbe:
             [None, None, return_pos[2] + 2], self.travel_speed)
         self.auto_detach_probe(return_pos)
 
-    def probe_prepare(self, hmove):
-        if self.multi == MULTI_OFF or self.multi == MULTI_FIRST:
-            return_pos = self.toolhead.get_position()
-            self.auto_attach_probe(return_pos)
-        if self.multi == MULTI_FIRST:
-            self.multi = MULTI_ON
-
-    def probe_finish(self, hmove):
-        self.wait_trigger_complete.wait()
-        if self.multi == MULTI_OFF:
-            return_pos = self.toolhead.get_position()
-            self.toolhead.manual_move(
-                [None, None, return_pos[2] + 2], self.travel_speed)
-            self.auto_detach_probe(return_pos)
+    ##################################################################
+    # MCU endstop interface forwarded to mcu_endstop
+    # (needed so DescendToEndstopHelper can call probing_move on us)
+    ##################################################################
 
     def home_start(self, print_time, sample_time, sample_count,
                    rest_time, triggered=True):
@@ -624,9 +646,6 @@ class DockableProbe:
 
     def wait_for_trigger(self, eventtime):
         self.finish_home_complete.wait()
-
-    def get_position_endstop(self):
-        return self.position_endstop
 
 
 def load_config(config):
