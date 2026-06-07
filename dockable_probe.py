@@ -216,20 +216,20 @@ class DockableProbe:
         self.probe_offsets = probe.ProbeOffsetsHelper(config)
         if hasattr(probe, 'ProbeParameterHelper'):
             self.param_helper = probe.ProbeParameterHelper(config)
-        if hasattr(probe, 'ProbeEndstopSessionHelper'):
+            if hasattr(probe, 'ProbeEndstopSessionHelper'):
         # Current Klipper master (post PR #6879)
-            self.probe_session = probe.ProbeEndstopSessionHelper(
-                config, self, self.param_helper)
-        elif hasattr(probe, 'ProbeSessionHelper'):
+                self.probe_session = probe.ProbeEndstopSessionHelper(
+                    config, self, self.param_helper)
+            elif hasattr(probe, 'ProbeSessionHelper'):
         # Intermediate Klipper (post PR #6605, pre PR #6879)
-            self.homing_helper = probe.HomingViaProbeHelper(
-                config, self, self.param_helper)
-            self.probe_session = probe.ProbeSessionHelper(
-                config, self.param_helper,
-                self.homing_helper.start_probe_session)
-        else:
-            raise config.error(
-            "Incompatible Klipper probe API - cannot initialize DockableProbe")
+                self.homing_helper = probe.HomingViaProbeHelper(
+                    config, self, self.param_helper)
+                self.probe_session = probe.ProbeSessionHelper(
+                    config, self.param_helper,
+                    self.homing_helper.start_probe_session)
+            else:
+                raise config.error(
+                "Incompatible Klipper probe API - cannot initialize DockableProbe")
         elif hasattr(probe, 'ProbeSessionHelper'):
     # Older Klipper (pre PR #6605)
             self.probe_session = probe.ProbeSessionHelper(config, self)
