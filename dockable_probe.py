@@ -508,7 +508,7 @@ class DockableProbe:
         if self.get_probe_state() != PROBE_DOCKED:
             raise self.printer.command_error('Probe detach failed!')
 
-        if return_pos:
+        if self.return_to_last_probe_position_after_detach and return_pos:
             if not self._check_distance(return_pos, self.detach_distance):
                 self.toolhead.manual_move(
                     [return_pos[0], return_pos[1], None], self.travel_speed)
