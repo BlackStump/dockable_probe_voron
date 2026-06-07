@@ -312,7 +312,10 @@ class DockableProbe:
         status['last_status'] = self.last_probe_state
         return status
     def start_probe_session(self, gcmd):
-        return self.probe_session.start_probe_session(gcmd)
+        if hasattr(self.probe_session, 'start_probe_session'):
+            return self.probe_session.start_probe_session(gcmd)
+        else:
+            return self.probe_session
 
     def _handle_connect(self):
         self.toolhead = self.printer.lookup_object('toolhead')
